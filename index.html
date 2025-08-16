@@ -4,243 +4,325 @@
   <meta charset="UTF-8">
   <title>VoiceLooper Web</title>
   <style>
-    body { font-family: Arial, sans-serif; background-color: #121212; color: #fff; margin:0; padding:20px; }
-    .controls { margin-bottom: 10px; }
-    .track { background: #1e1e1e; border: 1px solid #444; padding: 10px; margin-bottom: 5px; display: flex; align-items: center; }
-    .track button { margin-right: 5px; }
+    body {
+      background: #111;
+      color: #fff;
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+    }
+    h1 {
+      margin-top: 0;
+    }
+    .controls {
+      margin-bottom: 10px;
+    }
+    .controls label,
+    .controls button {
+      margin-right: 10px;
+    }
+    #tracks .track {
+      margin-bottom: 8px;
+      padding: 5px;
+      border: 1px solid #333;
+    }
+    #tracks .track button {
+      margin-left: 4px;
+    }
+    button:disabled {
+      opacity: 0.5;
+    }
   </style>
 </head>
 <body>
   <h1>VoiceLooper Web</h1>
   <div class="controls">
-    BPM: <input id="bpmInput" type="number" value="120" min="40" max="200" style="width:60px;">
-    Quantize <input id="quantizeToggle" type="checkbox" checked>
+    <label>BPM: <input type="number" id="bpm" value="120" min="40" max="240" style="width:60px;"></label>
+    <label><input type="checkbox" id="quantize" checked> Quantize</label>
     <button id="metronomeBtn">Start Metronome</button>
+    <button id="playAllBtn" disabled>Play All</button>
+    <button id="stopAllBtn" disabled>Stop All</button>
+    <button id="addTrackBtn">+ Add Track</button>
   </div>
   <div id="tracks"></div>
+  <script>
+    const maxTracks = 10;
+    const initialTracks = 3;
+    const tracks = [];
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    let metronomeOn = false;
+    let metronomeInterval;
 
-<script>
-  const numTracks = 10;
-  const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-  const tracks = [];
-  let metronomeInterval = null;
-  let quantizeOn = true;
-  
-  document.getElementById('quantizeToggle').addEventListener('change', (e) => {
-    quantizeOn = e.target.checked;
-  });
-
-  function createTrack(index) {
-    const track = {
-      index: index,
-      buffer: null,
-      source: null,
-      recording: false,
-      chunks: [],
-      recorder: null,
-      mute: false
-    };
-    tracks.push(track);
-
-    const div = document.createElement('div');
-    div.className = 'track';
-    div.id = 'track' + index;
-
-    div.innerHTML = `
-      <span style="width:70px;">Track ${index + 1}</span>
-      <button class="recBtn">Rec</button>
-      <button class="playBtn" disabled>Play</button>
-      <button class="deleteBtn" disabled>Delete</button>
-      <button class="fxBtn" disabled>FX</button>
-      <button class="muteBtn" disabled>Mute</button>
-    `;
-
-    document.getElementById('tracks').appendChild(div);
-
-    const recBtn = div.querySelector('.recBtn');
-    const playBtn = div.querySelector('.playBtn');
-    const deleteBtn = div.querySelector('.deleteBtn');
-    const fxBtn = div.querySelector('.fxBtn');
-    const muteBtn = div.querySelector('.muteBtn');
-
-    recBtn.addEventListener('click', () => toggleRecord(track, recBtn, playBtn, deleteBtn, fxBtn, muteBtn));
-    playBtn.addEventListener('click', () => togglePlay(track, playBtn));
-    deleteBtn.addEventListener('click', () => deleteTrack(track, playBtn, deleteBtn, fxBtn, muteBtn));
-    fxBtn.addEventListener('click', () => showEffectPrompt(track));
-    muteBtn.addEventListener('click', () => toggleMute(track, muteBtn));
-  }
-
-  async function toggleRecord(track, recBtn, playBtn, deleteBtn, fxBtn, muteBtn) {
-    if (track.recording) {
-      track.recorder.stop();
-      recBtn.textContent = 'Rec';
-      track.recording = false;
-      return;
-    }
-    // Start recording
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    track.recorder = new MediaRecorder(stream);
-    track.chunks = [];
-    track.recorder.ondataavailable = e => {
-      if (e.data && e.data.size > 0) {
-        track.chunks.push(e.data);
+    class Track {
+      constructor(index) {
+        this.index = index;
+        this.container = document.createElement('div');
+        this.container.className = 'track';
+        // Label
+        const label = document.createElement('span');
+        label.textContent = 'Track ' + index;
+        this.container.appendChild(label);
+        // Buttons
+        this.recBtn = document.createElement('button');
+        this.recBtn.textContent = 'Rec';
+        this.playBtn = document.createElement('button');
+        this.playBtn.textContent = 'Play';
+        this.deleteBtn = document.createElement('button');
+        this.deleteBtn.textContent = 'Delete';
+        this.fxBtn = document.createElement('button');
+        this.fxBtn.textContent = 'FX';
+        this.muteBtn = document.createElement('button');
+        this.muteBtn.textContent = 'Mute';
+        // Disable until we have data
+        this.playBtn.disabled = true;
+        this.deleteBtn.disabled = true;
+        this.fxBtn.disabled = true;
+        this.muteBtn.disabled = true;
+        // Append buttons
+        this.container.appendChild(this.recBtn);
+        this.container.appendChild(this.playBtn);
+        this.container.appendChild(this.deleteBtn);
+        this.container.appendChild(this.fxBtn);
+        this.container.appendChild(this.muteBtn);
+        document.getElementById('tracks').appendChild(this.container);
+        // Audio-related properties
+        this.chunks = [];
+        this.buffer = null;
+        this.source = null;
+        this.mediaRecorder = null;
+        this.muted = false;
+        this.gainNode = audioCtx.createGain();
+        this.gainNode.connect(audioCtx.destination);
+        // Bind events
+        this.recBtn.addEventListener('click', () => this.toggleRec());
+        this.playBtn.addEventListener('click', () => this.togglePlay());
+        this.deleteBtn.addEventListener('click', () => this.delete());
+        this.fxBtn.addEventListener('click', () => this.showFXPrompt());
+        this.muteBtn.addEventListener('click', () => this.toggleMute());
       }
-    };
-    track.recorder.onstop = async () => {
-      const blob = new Blob(track.chunks, { type: 'audio/webm' });
-      const arrayBuffer = await blob.arrayBuffer();
-      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-      let finalBuffer = audioBuffer;
-      if (quantizeOn) {
-        const bpm = parseFloat(document.getElementById('bpmInput').value);
-        const beatSamples = Math.round((60 / bpm) * audioBuffer.sampleRate);
-        const quantizedLength = Math.ceil(audioBuffer.length / beatSamples) * beatSamples;
-        finalBuffer = audioContext.createBuffer(audioBuffer.numberOfChannels, quantizedLength, audioBuffer.sampleRate);
-        for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
-          const data = audioBuffer.getChannelData(ch);
-          finalBuffer.getChannelData(ch).set(data.slice(0, quantizedLength));
+      async toggleRec() {
+        // If recording, stop
+        if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
+          this.mediaRecorder.stop();
+          this.recBtn.textContent = 'Rec';
+          return;
         }
-      }
-      track.buffer = finalBuffer;
-      playBtn.disabled = false;
-      deleteBtn.disabled = false;
-      fxBtn.disabled = false;
-      muteBtn.disabled = false;
-    };
-    track.recorder.start();
-    track.recording = true;
-    recBtn.textContent = 'Stop';
-  }
-
-  function togglePlay(track, playBtn) {
-    if (track.source) {
-      track.source.stop();
-      track.source = null;
-      playBtn.textContent = 'Play';
-      return;
-    }
-    if (!track.buffer) return;
-    const source = audioContext.createBufferSource();
-    source.buffer = track.buffer;
-    source.loop = true;
-    source.connect(audioContext.destination);
-    source.start();
-    track.source = source;
-    playBtn.textContent = 'Stop';
-  }
-
-  function deleteTrack(track, playBtn, deleteBtn, fxBtn, muteBtn) {
-    if (track.source) {
-      track.source.stop();
-      track.source = null;
-    }
-    track.buffer = null;
-    playBtn.disabled = true;
-    deleteBtn.disabled = true;
-    fxBtn.disabled = true;
-    muteBtn.disabled = true;
-  }
-
-  function toggleMute(track, muteBtn) {
-    track.mute = !track.mute;
-    if (track.source) {
-      if (track.mute) {
-        track.source.disconnect();
-        muteBtn.textContent = 'Unmute';
-      } else {
-        track.source.connect(audioContext.destination);
-        muteBtn.textContent = 'Mute';
-      }
-    }
-  }
-
-  function showEffectPrompt(track) {
-    if (!track.buffer) return;
-    const effect = prompt('Enter effect: reverb, delay, pitchUp, pitchDown, loFi');
-    if (!effect) return;
-    applyEffect(track, effect);
-  }
-
-  function applyEffect(track, effect) {
-    const offline = new OfflineAudioContext(track.buffer.numberOfChannels, track.buffer.length, track.buffer.sampleRate);
-    const bufferSource = offline.createBufferSource();
-    bufferSource.buffer = track.buffer;
-    let finalNode = bufferSource;
-
-    if (effect === 'reverb') {
-      const convolver = offline.createConvolver();
-      const impulse = offline.createBuffer(1, offline.sampleRate * 3, offline.sampleRate);
-      const impulseData = impulse.getChannelData(0);
-      for (let i = 0; i < impulseData.length; i++) {
-        impulseData[i] = (Math.random() * 2 - 1) * (1 - i / impulseData.length);
-      }
-      convolver.buffer = impulse;
-      finalNode.connect(convolver);
-      finalNode = convolver;
-    } else if (effect === 'delay') {
-      const delay = offline.createDelay();
-      delay.delayTime.value = 0.25;
-      const feedback = offline.createGain();
-      feedback.gain.value = 0.5;
-      finalNode.connect(delay).connect(feedback).connect(delay);
-      finalNode = delay;
-    } else if (effect === 'pitchUp' || effect === 'pitchDown') {
-      const ratio = effect === 'pitchUp' ? 1.25 : 0.8;
-      bufferSource.playbackRate.value = ratio;
-    } else if (effect === 'loFi') {
-      // simple bitcrusher effect: downsample by factor of 4
-      const processor = offline.createScriptProcessor(0, track.buffer.numberOfChannels, track.buffer.numberOfChannels);
-      processor.onaudioprocess = function(e) {
-        for (let ch = 0; ch < e.outputBuffer.numberOfChannels; ch++) {
-          const input = e.inputBuffer.getChannelData(ch);
-          const output = e.outputBuffer.getChannelData(ch);
-          for (let i = 0; i < input.length; i += 4) {
-            const sample = input[i];
-            output[i] = sample;
-            output[i + 1] = sample;
-            output[i + 2] = sample;
-            output[i + 3] = sample;
+        // start recording
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        this.chunks = [];
+        this.mediaRecorder = new MediaRecorder(stream);
+        this.mediaRecorder.ondataavailable = e => this.chunks.push(e.data);
+        this.mediaRecorder.onstop = async () => {
+          const blob = new Blob(this.chunks, { type: 'audio/webm' });
+          const arrayBuffer = await blob.arrayBuffer();
+          let audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+          if (document.getElementById('quantize').checked) {
+            audioBuffer = quantizeBuffer(audioBuffer);
           }
+          this.buffer = audioBuffer;
+          this.playBtn.disabled = false;
+          this.deleteBtn.disabled = false;
+          this.fxBtn.disabled = false;
+          this.muteBtn.disabled = false;
+          updateGlobalButtons();
+        };
+        this.mediaRecorder.start();
+        this.recBtn.textContent = 'Stop';
+      }
+      togglePlay() {
+        if (!this.buffer) return;
+        if (this.source) {
+          this.source.stop();
+          this.source = null;
+          this.playBtn.textContent = 'Play';
+        } else {
+          this.source = audioCtx.createBufferSource();
+          this.source.buffer = this.buffer;
+          this.source.loop = true;
+          this.source.connect(this.gainNode);
+          this.source.start();
+          this.playBtn.textContent = 'Stop';
         }
-      };
-      finalNode.connect(processor);
-      finalNode = processor;
+      }
+      delete() {
+        if (this.source) {
+          this.source.stop();
+          this.source = null;
+        }
+        this.buffer = null;
+        this.playBtn.disabled = true;
+        this.deleteBtn.disabled = true;
+        this.fxBtn.disabled = true;
+        this.muteBtn.disabled = true;
+        this.muteBtn.textContent = 'Mute';
+        this.recBtn.textContent = 'Rec';
+        updateGlobalButtons();
+      }
+      toggleMute() {
+        this.muted = !this.muted;
+        this.gainNode.gain.value = this.muted ? 0 : 1;
+        this.muteBtn.textContent = this.muted ? 'Unmute' : 'Mute';
+      }
+      showFXPrompt() {
+        if (!this.buffer) return;
+        const effect = prompt('Enter effect: reverb, delay, pitchUp, pitchDown, loFi');
+        if (!effect) return;
+        applyEffectToTrack(this, effect.trim().toLowerCase());
+      }
     }
-
-    finalNode.connect(offline.destination);
-    bufferSource.start();
-    offline.startRendering().then(renderedBuffer => {
-      track.buffer = renderedBuffer;
+    function quantizeBuffer(buffer) {
+      const bpm = parseFloat(document.getElementById('bpm').value) || 120;
+      const beatSeconds = 60 / bpm;
+      const samplesPerBeat = Math.round(beatSeconds * buffer.sampleRate);
+      const quantizedLength = Math.round(buffer.length / samplesPerBeat) * samplesPerBeat;
+      const newBuffer = audioCtx.createBuffer(buffer.numberOfChannels, quantizedLength, buffer.sampleRate);
+      for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+        const channelData = buffer.getChannelData(ch);
+        const newData = newBuffer.getChannelData(ch);
+        newData.set(channelData.slice(0, quantizedLength));
+      }
+      return newBuffer;
+    }
+    function applyEffectToTrack(track, effect) {
+      switch (effect) {
+        case 'reverb': {
+          const convolver = audioCtx.createConvolver();
+          const length = audioCtx.sampleRate * 2;
+          const impulse = audioCtx.createBuffer(2, length, audioCtx.sampleRate);
+          for (let ch = 0; ch < 2; ch++) {
+            const data = impulse.getChannelData(ch);
+            for (let i = 0; i < length; i++) {
+              data[i] = (Math.random() * 2 - 1) * (1 - i / length);
+            }
+          }
+          convolver.buffer = impulse;
+          track.gainNode.disconnect();
+          track.gainNode.connect(convolver);
+          convolver.connect(audioCtx.destination);
+          break;
+        }
+        case 'delay': {
+          const delay = audioCtx.createDelay();
+          delay.delayTime.value = 0.3;
+          const feedback = audioCtx.createGain();
+          feedback.gain.value = 0.4;
+          track.gainNode.disconnect();
+          track.gainNode.connect(delay);
+          delay.connect(feedback);
+          feedback.connect(delay);
+          delay.connect(audioCtx.destination);
+          break;
+        }
+        case 'pitchup':
+        case 'pitch up':
+        case 'pitchup': {
+          pitchShift(track, 1.059463);
+          break;
+        }
+        case 'pitchdown':
+        case 'pitch down': {
+          pitchShift(track, 0.943874);
+          break;
+        }
+        case 'lofi':
+        case 'lo-fi': {
+          loFiEffect(track);
+          break;
+        }
+        default:
+          alert('Unknown effect');
+      }
+    }
+    function pitchShift(track, ratio) {
+      const buffer = track.buffer;
+      const numChannels = buffer.numberOfChannels;
+      const length = Math.floor(buffer.length / ratio);
+      const newBuffer = audioCtx.createBuffer(numChannels, length, buffer.sampleRate);
+      for (let ch = 0; ch < numChannels; ch++) {
+        const oldData = buffer.getChannelData(ch);
+        const newData = newBuffer.getChannelData(ch);
+        for (let i = 0; i < length; i++) {
+          const oldIndex = i * ratio;
+          const fl = Math.floor(oldIndex);
+          const frac = oldIndex - fl;
+          const nextVal = fl + 1 < oldData.length ? oldData[fl + 1] : 0;
+          newData[i] = oldData[fl] * (1 - frac) + nextVal * frac;
+        }
+      }
+      track.buffer = newBuffer;
+    }
+    function loFiEffect(track) {
+      const buffer = track.buffer;
+      const numChannels = buffer.numberOfChannels;
+      const factor = 4;
+      const length = buffer.length;
+      const newBuffer = audioCtx.createBuffer(numChannels, length, buffer.sampleRate);
+      for (let ch = 0; ch < numChannels; ch++) {
+        const data = buffer.getChannelData(ch);
+        const newData = newBuffer.getChannelData(ch);
+        for (let i = 0; i < length; i++) {
+          newData[i] = data[Math.floor(i / factor) * factor];
+        }
+      }
+      track.buffer = newBuffer;
+    }
+    function updateGlobalButtons() {
+      const anyBuffer = tracks.some(t => t.buffer);
+      document.getElementById('playAllBtn').disabled = !anyBuffer;
+      document.getElementById('stopAllBtn').disabled = !anyBuffer;
+    }
+    document.getElementById('playAllBtn').addEventListener('click', () => {
+      tracks.forEach(t => {
+        if (t.buffer && !t.source) {
+          t.togglePlay();
+        }
+      });
     });
-  }
-  document.getElementById('metronomeBtn').addEventListener('click', () => {
-    if (metronomeInterval) {
-      clearInterval(metronomeInterval);
-      metronomeInterval = null;
-      document.getElementById('metronomeBtn').textContent = 'Start Metronome';
-    } else {
-      const bpm = parseFloat(document.getElementById('bpmInput').value);
-      const interval = 60000 / bpm;
-      const clickContext = new (window.AudioContext || window.webkitAudioContext)();
-      const playClick = () => {
-        const osc = clickContext.createOscillator();
-        const gain = clickContext.createGain();
-        osc.connect(gain).connect(clickContext.destination);
-        osc.frequency.value = 1000;
-        gain.gain.setValueAtTime(0.3, clickContext.currentTime);
-        osc.start();
-        osc.stop(clickContext.currentTime + 0.05);
-      };
-      playClick();
-      metronomeInterval = setInterval(playClick, interval);
+    document.getElementById('stopAllBtn').addEventListener('click', () => {
+      tracks.forEach(t => {
+        if (t.source) {
+          t.togglePlay();
+        }
+      });
+    });
+    document.getElementById('addTrackBtn').addEventListener('click', () => {
+      if (tracks.length >= maxTracks) return;
+      const id = tracks.length + 1;
+      const track = new Track(id);
+      tracks.push(track);
+      if (tracks.length >= maxTracks) {
+        document.getElementById('addTrackBtn').disabled = true;
+      }
+    });
+    document.getElementById('metronomeBtn').addEventListener('click', () => {
+      if (metronomeOn) {
+        clearInterval(metronomeInterval);
+        metronomeOn = false;
+        document.getElementById('metronomeBtn').textContent = 'Start Metronome';
+        return;
+      }
+      const clickOsc = audioCtx.createOscillator();
+      clickOsc.type = 'square';
+      clickOsc.frequency.value = 1000;
+      const clickGain = audioCtx.createGain();
+      clickGain.gain.value = 0;
+      clickOsc.connect(clickGain).connect(audioCtx.destination);
+      clickOsc.start();
+      function scheduleClick() {
+        clickGain.gain.cancelScheduledValues(audioCtx.currentTime);
+        clickGain.gain.setValueAtTime(1, audioCtx.currentTime);
+        clickGain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.05);
+      }
+      const bpm = () => parseFloat(document.getElementById('bpm').value) || 120;
+      metronomeInterval = setInterval(scheduleClick, (60 / bpm()) * 1000);
+      metronomeOn = true;
       document.getElementById('metronomeBtn').textContent = 'Stop Metronome';
+    });
+    // Initialize initial tracks
+    for (let i = 0; i < initialTracks; i++) {
+      const track = new Track(i + 1);
+      tracks.push(track);
     }
-  });
-
-  // Initialize tracks
-  for (let i = 0; i < numTracks; i++) {
-    createTrack(i);
-  }
-</script>
+  </script>
 </body>
 </html>
