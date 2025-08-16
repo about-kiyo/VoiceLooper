@@ -58,14 +58,12 @@
     let audioCtx;
     let metronomeInterval;
     let metronomeOsc;
-    // Utility: Ensure audio context exists
     function getAudioContext() {
         if (!audioCtx) {
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         }
         return audioCtx;
     }
-
     class Track {
         constructor(index) {
             this.index = index;
@@ -77,44 +75,41 @@
             this.effectAmount = null;
             this.volumeSlider = null;
             this.gainNode = null;
+            this.source = null;
+            this.mediaRecorder = null;
+            this.mediaStream = null;
+            this.recordedChunks = [];
             this.buffer = null;
             this.processedBuffer = null;
             this.isRecording = false;
             this.isPlaying = false;
             this.isMuted = false;
-            this.recorder = null;
-            this.initUI();
+            this.render();
         }
-        initUI() {
+        render() {
             const container = document.createElement('div');
             container.className = 'track';
             container.id = 'track-' + this.index;
-
             const label = document.createElement('span');
-            label.textContent = `Track ${this.index + 1}`;
-            label.style.minWidth = '70px';
+            label.textContent = 'Track ' + this.index;
+            label.style.width = '70px';
             container.appendChild(label);
-
             this.recBtn = document.createElement('button');
             this.recBtn.textContent = 'Rec';
             this.recBtn.addEventListener('click', () => this.toggleRec());
             container.appendChild(this.recBtn);
-
             this.playBtn = document.createElement('button');
             this.playBtn.textContent = 'Play';
             this.playBtn.disabled = true;
             this.playBtn.addEventListener('click', () => this.togglePlay());
             container.appendChild(this.playBtn);
-
             this.deleteBtn = document.createElement('button');
             this.deleteBtn.textContent = 'Del';
             this.deleteBtn.disabled = true;
             this.deleteBtn.addEventListener('click', () => this.deleteTrack());
             container.appendChild(this.deleteBtn);
-
-            // Effect selection
             this.effectSelect = document.createElement('select');
-            ['none', 'reverb', 'delay', 'pitchUp', 'pitchDown', 'lofi'].forEach(opt => {
+            ['none','reverb','delay','pitchUp','pitchDown','lofi'].forEach(opt => {
                 const option = document.createElement('option');
                 option.value = opt;
                 option.textContent = opt;
@@ -123,8 +118,6 @@
             this.effectSelect.disabled = true;
             this.effectSelect.addEventListener('change', () => this.applyEffect());
             container.appendChild(this.effectSelect);
-
-            // Effect amount slider
             this.effectAmount = document.createElement('input');
             this.effectAmount.type = 'range';
             this.effectAmount.min = 0; this.effectAmount.max = 1; this.effectAmount.step = 0.01;
@@ -133,8 +126,6 @@
             this.effectAmount.disabled = true;
             this.effectAmount.addEventListener('input', () => this.applyEffect());
             container.appendChild(this.effectAmount);
-
-            // Volume slider
             this.volumeSlider = document.createElement('input');
             this.volumeSlider.type = 'range';
             this.volumeSlider.min = 0; this.volumeSlider.max = 1; this.volumeSlider.step = 0.01;
@@ -143,13 +134,11 @@
             this.volumeSlider.disabled = true;
             this.volumeSlider.addEventListener('input', () => this.updateVolume());
             container.appendChild(this.volumeSlider);
-
             this.muteBtn = document.createElement('button');
             this.muteBtn.textContent = 'Mute';
             this.muteBtn.disabled = true;
             this.muteBtn.addEventListener('click', () => this.toggleMute());
             container.appendChild(this.muteBtn);
-
             document.getElementById('tracksContainer').appendChild(container);
         }
         async toggleRec() {
@@ -161,46 +150,70 @@
         }
         async startRec() {
             const ctx = getAudioContext();
+            this.isRecording = true;
+            this.recBtn.textContent = 'Stop';
+            // Disable controls while recording
+            this.playBtn.disabled = true;
+            this.deleteBtn.disabled = true;
+            this.effectSelect.disabled = true;
+            this.effectAmount.disabled = true;
+            this.volumeSlider.disabled = true;
+            this.muteBtn.disabled = true;
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                this.mediaStream = stream;
-                this.mediaSource = ctx.createMediaStreamSource(stream);
-                const recorder = new MediaRecorder(stream);
-                this.recorder = recorder;
-                const chunks = [];
-                recorder.ondataavailable = evt => chunks.push(evt.data);
-                recorder.onstop = async () => {
-                    const blob = new Blob(chunks, { type: 'audio/webm' });
-                    const arrayBuffer = await blob.arrayBuffer();
-                    ctx.decodeAudioData(arrayBuffer).then(decoded => {
-                        const quantize = document.getElementById('quantizeChk').checked;
-                        const bpm = parseFloat(document.getElementById('bpmInput').value);
-                        this.buffer = quantize ? quantizeBuffer(decoded, bpm, ctx) : decoded;
-                        this.processedBuffer = this.buffer;
-                        this.recBtn.textContent = 'Rec';
-                        this.recBtn.disabled = false;
-                        this.playBtn.disabled = false;
-                        this.deleteBtn.disabled = false;
-                        this.effectSelect.disabled = false;
-                        this.effectAmount.disabled = false;
-                        this.volumeSlider.disabled = false;
-                        this.muteBtn.disabled = false;
-                        this.updateGlobalButtons();
-                    });
+                this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                this.mediaRecorder = new MediaRecorder(this.mediaStream);
+                this.recordedChunks = [];
+                this.mediaRecorder.ondataavailable = e => {
+                    if (e.data.size > 0) {
+                        this.recordedChunks.push(e.data);
+                    }
                 };
-                recorder.start();
-                this.recBtn.textContent = 'Stop';
-                this.isRecording = true;
-                recorder.ondataavailable = evt => chunks.push(evt.data);
-                recorder.onstop = () => { this.isRecording = false; stream.getTracks().forEach(t => t.stop()); };
-                setTimeout(() => {}, 0);
+                this.mediaRecorder.onstop = async () => {
+                    try {
+                        const blob = new Blob(this.recordedChunks);
+                        const arrayBuffer = await blob.arrayBuffer();
+                        this.buffer = await ctx.decodeAudioData(arrayBuffer);
+                        const quantizeFlag = document.getElementById('quantizeChk').checked;
+                        if (quantizeFlag) {
+                            const bpm = parseFloat(document.getElementById('bpmInput').value);
+                            this.buffer = quantizeBuffer(this.buffer, bpm);
+                        }
+                        this.processedBuffer = this.buffer;
+                    } catch (err) {
+                        console.error('Decoding failed', err);
+                        this.buffer = null;
+                        this.processedBuffer = null;
+                    }
+                    // Reset recording state
+                    this.isRecording = false;
+                    this.recBtn.textContent = 'Rec';
+                    this.playBtn.disabled = !this.buffer;
+                    this.deleteBtn.disabled = !this.buffer;
+                    this.effectSelect.disabled = !this.buffer;
+                    this.effectAmount.disabled = !this.buffer;
+                    this.volumeSlider.disabled = !this.buffer;
+                    this.muteBtn.disabled = !this.buffer;
+                    this.updateVolume();
+                    this.updateGlobalButtons();
+                    // Clean up mic
+                    if (this.mediaStream) {
+                        this.mediaStream.getTracks().forEach(t => t.stop());
+                    }
+                };
+                this.mediaRecorder.start();
             } catch (err) {
-                console.error(err);
+                console.error('Error during recording', err);
+                this.isRecording = false;
+                this.recBtn.textContent = 'Rec';
             }
         }
         stopRec() {
-            if (this.recorder) {
-                this.recorder.stop();
+            if (this.mediaRecorder && this.isRecording) {
+                try {
+                    this.mediaRecorder.stop();
+                } catch (e) {
+                    console.error('Error stopping recorder', e);
+                }
             }
         }
         togglePlay() {
@@ -213,36 +226,32 @@
         }
         startPlay() {
             const ctx = getAudioContext();
-            // ensure processed buffer
-            const bufferToUse = this.processedBuffer || this.buffer;
+            const buffer = this.processedBuffer || this.buffer;
+            this.gainNode = ctx.createGain();
+            this.gainNode.gain.value = this.isMuted ? 0 : this.volumeSlider.value;
             this.source = ctx.createBufferSource();
-            this.source.buffer = bufferToUse;
-            if (!this.gainNode) this.gainNode = ctx.createGain();
-            this.source.connect(this.gainNode).connect(ctx.destination);
-            this.gainNode.gain.value = this.volumeSlider.value;
+            this.source.buffer = buffer;
             this.source.loop = true;
+            this.source.connect(this.gainNode).connect(ctx.destination);
             this.source.start();
             this.isPlaying = true;
             this.playBtn.textContent = 'Stop';
             this.updateGlobalButtons();
         }
         stopPlay() {
-            if (this.source) {
-                this.source.stop();
-                this.source.disconnect();
-                this.source = null;
-            }
+            if (!this.isPlaying) return;
+            this.source.stop();
             this.isPlaying = false;
             this.playBtn.textContent = 'Play';
             this.updateGlobalButtons();
         }
         deleteTrack() {
-            this.stopRec();
             this.stopPlay();
-            const trackElem = document.getElementById('track-' + this.index);
-            trackElem.remove();
-            tracks.splice(tracks.indexOf(this), 1);
-            this.updateGlobalButtons();
+            const elem = document.getElementById('track-' + this.index);
+            if (elem) elem.remove();
+            const idx = tracks.indexOf(this);
+            if (idx > -1) tracks.splice(idx, 1);
+            updateGlobalButtons();
         }
         toggleMute() {
             if (!this.gainNode) return;
@@ -254,8 +263,8 @@
             if (this.gainNode) {
                 this.gainNode.gain.value = this.volumeSlider.value;
                 if (this.isMuted) {
-                    this.muteBtn.textContent = 'Unmute';
                     this.isMuted = false;
+                    this.muteBtn.textContent = 'Mute';
                 }
             }
         }
@@ -270,37 +279,32 @@
             }
         }
         updateGlobalButtons() {
-            // dummy placeholder; actual implementation below in global scope
+            // placeholder; replaced below
         }
     }
-
     function applyEffectToBuffer(buffer, type, amount) {
-        // Return new buffer based on effect; simple implementations
         const ctx = getAudioContext();
-        if (type === 'none') return buffer;
-        const numChannels = buffer.numberOfChannels;
+        if (!type || type === 'none') return buffer;
+        const channels = buffer.numberOfChannels;
         const length = buffer.length;
         const sampleRate = buffer.sampleRate;
-        const newBuffer = ctx.createBuffer(numChannels, length, sampleRate);
-        for (let ch = 0; ch < numChannels; ch++) {
+        const newBuffer = ctx.createBuffer(channels, length, sampleRate);
+        for (let ch = 0; ch < channels; ch++) {
             const input = buffer.getChannelData(ch);
             const output = newBuffer.getChannelData(ch);
             switch (type) {
                 case 'reverb': {
-                    const decay = amount * 2; // up to 2s
-                    const reverbBuffer = new Float32Array(length);
+                    const decay = amount * 2;
+                    const rev = new Float32Array(length);
                     for (let i = 0; i < length; i++) {
-                        reverbBuffer[i] = input[i];
-                        if (i > 0) {
-                            reverbBuffer[i] += decay * reverbBuffer[i - 1];
-                        }
-                        // mix original and reverb
-                        output[i] = (1 - amount) * input[i] + amount * reverbBuffer[i];
+                        rev[i] = input[i];
+                        if (i > 0) rev[i] += decay * rev[i - 1];
+                        output[i] = (1 - amount) * input[i] + amount * rev[i];
                     }
                     break;
                 }
                 case 'delay': {
-                    const delaySamples = Math.floor(sampleRate * amount * 0.5); // up to 0.5s
+                    const delaySamples = Math.floor(sampleRate * amount * 0.5);
                     for (let i = 0; i < length; i++) {
                         const delayedIndex = i - delaySamples;
                         const delayed = delayedIndex >= 0 ? input[delayedIndex] : 0;
@@ -310,15 +314,14 @@
                 }
                 case 'pitchUp':
                 case 'pitchDown': {
-                    const shiftFactor = type === 'pitchUp' ? (1 + amount) : (1 - amount * 0.5);
+                    const factor = type === 'pitchUp' ? 1 + amount : 1 - amount * 0.5;
                     for (let i = 0; i < length; i++) {
-                        const srcIndex = i / shiftFactor;
+                        const srcIndex = i / factor;
                         const lower = Math.floor(srcIndex);
                         const frac = srcIndex - lower;
-                        const sample = (input[lower] || 0);
-                        const nextSample = (input[lower + 1] || 0);
-                        const shifted = sample * (1 - frac) + nextSample * frac;
-                        output[i] = shifted;
+                        const samp = input[lower] || 0;
+                        const next = input[lower + 1] || 0;
+                        output[i] = samp * (1 - frac) + next * frac;
                     }
                     break;
                 }
@@ -337,96 +340,84 @@
         }
         return newBuffer;
     }
-
-    function quantizeBuffer(buffer, bpm, ctx) {
-        // trim and pad buffer to nearest beat
-        const beatLengthSec = 60 / bpm;
-        const bufferLengthSec = buffer.duration;
-        const beats = Math.round(bufferLengthSec / beatLengthSec);
-        const newLength = Math.max(1, beats) * beatLengthSec;
-        const numSamples = Math.floor(newLength * buffer.sampleRate);
-        const newBuffer = ctx.createBuffer(buffer.numberOfChannels, numSamples, buffer.sampleRate);
+    function quantizeBuffer(buffer, bpm) {
+        const ctx = getAudioContext();
+        const secondsPerBeat = 60 / bpm;
+        const samplesPerBeat = buffer.sampleRate * secondsPerBeat;
+        const beats = Math.round(buffer.length / samplesPerBeat);
+        const newLength = Math.ceil(beats * samplesPerBeat);
+        const newBuffer = ctx.createBuffer(buffer.numberOfChannels, newLength, buffer.sampleRate);
         for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
             const src = buffer.getChannelData(ch);
-            const dest = newBuffer.getChannelData(ch);
-            for (let i = 0; i < numSamples; i++) {
-                dest[i] = src[i] || 0;
+            const dst = newBuffer.getChannelData(ch);
+            dst.set(src, 0);
+            for (let i = src.length; i < newLength; i++) {
+                dst[i] = 0;
             }
         }
         return newBuffer;
     }
-
-    // Global Play/Stop buttons update
     function updateGlobalButtons() {
-        const playAllBtn = document.getElementById('playAllBtn');
-        const stopAllBtn = document.getElementById('stopAllBtn');
-        const anyBuffer = tracks.some(t => t.buffer);
-        const anyPlaying = tracks.some(t => t.isPlaying);
-        playAllBtn.disabled = !anyBuffer || anyPlaying;
-        stopAllBtn.disabled = !anyPlaying;
+        const playAll = document.getElementById('playAllBtn');
+        const stopAll = document.getElementById('stopAllBtn');
+        playAll.disabled = !tracks.some(t => t.buffer);
+        stopAll.disabled = !tracks.some(t => t.isPlaying);
     }
-
-    // Create track
     function addTrack() {
-        if (tracks.length >= maxTracks) return;
-        const newTrack = new Track(tracks.length);
-        tracks.push(newTrack);
+        const nextIndex = trackCount + 1;
+        if (nextIndex > maxTracks) return;
+        const t = new Track(nextIndex);
+        tracks.push(t);
+        trackCount = nextIndex;
         updateGlobalButtons();
     }
-
-    // Initialize default tracks
-    for (let i = 0; i < trackCount; i++) {
-        addTrack();
+    for (let i = 1; i <= trackCount; i++) {
+        const t = new Track(i);
+        tracks.push(t);
     }
-
-    // Event listeners for global buttons
     document.getElementById('playAllBtn').addEventListener('click', () => {
-        tracks.forEach(t => { if (t.buffer && !t.isPlaying) t.startPlay(); });
+        tracks.forEach(t => {
+            if (t.buffer && !t.isPlaying) t.startPlay();
+        });
         updateGlobalButtons();
     });
     document.getElementById('stopAllBtn').addEventListener('click', () => {
-        tracks.forEach(t => { if (t.isPlaying) t.stopPlay(); });
+        tracks.forEach(t => {
+            if (t.isPlaying) t.stopPlay();
+        });
         updateGlobalButtons();
     });
     document.getElementById('addTrackBtn').addEventListener('click', () => {
         addTrack();
     });
-
-    // Metronome toggle
     document.getElementById('metronomeBtn').addEventListener('click', () => {
         const btn = document.getElementById('metronomeBtn');
-        if (metronomeInterval) {
-            clearInterval(metronomeInterval);
-            metronomeInterval = null;
-            if (metronomeOsc) {
-                metronomeOsc.stop();
-                metronomeOsc.disconnect();
-                metronomeOsc = null;
-            }
-            btn.textContent = 'Start Metronome';
-        } else {
+        if (!metronomeInterval) {
             const bpm = parseFloat(document.getElementById('bpmInput').value);
             const ctx = getAudioContext();
-            const intervalMs = 60000 / bpm;
-            const playClick = () => {
-                const oscillator = ctx.createOscillator();
-                const gain = ctx.createGain();
-                oscillator.connect(gain).connect(ctx.destination);
-                oscillator.frequency.setValueAtTime(1000, ctx.currentTime);
-                gain.gain.setValueAtTime(1, ctx.currentTime);
-                gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.05);
-                oscillator.start();
-                oscillator.stop(ctx.currentTime + 0.05);
-            };
-            playClick();
-            metronomeInterval = setInterval(playClick, intervalMs);
+            metronomeOsc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            gain.gain.setValueAtTime(0.1, ctx.currentTime);
+            metronomeOsc.connect(gain).connect(ctx.destination);
+            metronomeOsc.type = 'square';
+            metronomeOsc.frequency.value = 1000;
+            metronomeOsc.start();
+            const interval = (60 / bpm) * 1000;
+            metronomeInterval = setInterval(() => {
+                gain.gain.setValueAtTime(0.1, ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.05);
+            }, interval);
             btn.textContent = 'Stop Metronome';
+        } else {
+            clearInterval(metronomeInterval);
+            if (metronomeOsc) {
+                metronomeOsc.stop();
+            }
+            metronomeInterval = null;
+            btn.textContent = 'Start Metronome';
         }
     });
-
-    // Attach updateGlobalButtons to Track prototype so each instance can call it
     Track.prototype.updateGlobalButtons = updateGlobalButtons;
     </script>
 </body>
 </html>
-
