@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>VoiceLooper Web</title>
+<style>
+body { font-family: Arial, sans-serif; background: #111; color: #eee; margin: 0; padding: 20px; }
+h1 { margin-top: 0; }
+.controls { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+.track { border: 1px solid #444; padding: 10px; margin-bottom: 10px; border-radius: 5px; }
+.track button { margin-right: 5px; }
+</style>
+</head>
+<body>
+<h1>VoiceLooper Web</h1>
+<div class="controls">
+<label>BPM: <input type="number" id="bpm" value="120"></label>
+<label><input type="checkbox" id="quantize" checked> Quantize</label>
+<button id="playAll">Play All</button>
+<button id="stopAll">Stop All</button>
+</div>
+<div id="tracks"></div>
+<script>
+(async () => {
+const tracksContainer = document.getElementById('tracks');
+const numTracks = 10;
+const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+const tracks = [];
+
+function createTrack(index) {
+ const trackDiv = document.createElement('div');
+ trackDiv.className = 'track';
+ trackDiv.innerHTML = '<h3>Track ' + (index + 1) + '</h3>';
+ const recordBtn = document.createElement('button');
+ recordBtn.textContent = 'Record';
+ const deleteBtn = document.createElement('button');
+ deleteBtn.textContent = 'Delete';
+ deleteBtn.disabled = true;
+ const muteBtn = document.createElement('button');
+ muteBtn.textContent = 'Mute';
+ muteBtn.disabled = true;
+ muteBtn.dataset.muted = 'false';
+ trackDiv.appendChild(recordBtn);
+ trackDiv.appendChild(deleteBtn);
+ trackDiv.appendChild(muteBtn);
+
+ let mediaRecorder;
+ let chunks = [];
+ let buffer = null;
+ let source = null;
+ const gainNode = audioContext.createGain();
+ gainNode.connect(audioContext.destination);
+
+ recordBtn.onclick = async () => {
+   if (mediaRecorder && mediaRecorder.state === 'recording') {
+     mediaRecorder.stop();
+     recordBtn.textContent = 'Record';
+   } else {
+     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+     mediaRecorder = new MediaRecorder(stream);
+     mediaRecorder.ondataavailable = e => chunks.push(e.data);
+     mediaRecorder.onstop = async () => {
+       const blob = new Blob(chunks, { type: 'audio/webm' });
+       chunks = [];
+       const arrayBuffer = await blob.arrayBuffer();
+       const tempBuffer = await audioContext.decodeAudioData(arrayBuffer);
+       const quantize = document.getElementById('quantize').checked;
+       const bpm = parseFloat(document.getElementById('bpm').value);
+       let resultBuffer = tempBuffer;
+       if (quantize) {
+         const beatDur = 60 / bpm;
+         const duration = tempBuffer.duration;
+         const beats = Math.max(1, Math.round(duration / beatDur));
+         const targetDur = beats * beatDur;
+         const offline = new OfflineAudioContext(1, Math.ceil(targetDur * audioContext.sampleRate), audioContext.sampleRate);
+         const src = offline.createBufferSource();
+         src.buffer = tempBuffer;
+         src.connect(offline.destination);
+         src.start(0);
+         const rendered = await offline.startRendering();
+         if (rendered.duration < targetDur) {
+           const padded = offline.createBuffer(1, Math.ceil(targetDur * offline.sampleRate), offline.sampleRate);
+           padded.copyToChannel(rendered.getChannelData(0), 0);
+           resultBuffer = padded;
+         } else {
+           resultBuffer = rendered;
+         }
+       }
+       buffer = resultBuffer;
+       deleteBtn.disabled = false;
+       muteBtn.disabled = false;
+     };
+     mediaRecorder.start();
+     recordBtn.textContent = 'Stop';
+   }
+ };
+
+ deleteBtn.onclick = () => {
+   buffer = null;
+   deleteBtn.disabled = true;
+   muteBtn.disabled = true;
+   recordBtn.textContent = 'Record';
+   if (source) {
+     source.stop();
+     source.disconnect();
+     source = null;
+   }
+ };
+
+ muteBtn.onclick = () => {
+   if (muteBtn.dataset.muted === 'true') {
+     muteBtn.dataset.muted = 'false';
+     muteBtn.textContent = 'Mute';
+     gainNode.gain.value = 1;
+   } else {
+     muteBtn.dataset.muted = 'true';
+     muteBtn.textContent = 'Unmute';
+     gainNode.gain.value = 0;
+   }
+ };
+
+ return {
+   element: trackDiv,
+   play: (startTime) => {
+     if (!buffer) return;
+     source = audioContext.createBufferSource();
+     source.buffer = buffer;
+     source.loop = true;
+     source.connect(gainNode);
+     source.start(startTime);
+   },
+   stop: () => {
+     if (source) {
+       source.stop();
+       source = null;
+     }
+   }
+ };
+}
+
+for (let i = 0; i < numTracks; i++) {
+ const track = createTrack(i);
+ tracks.push(track);
+ tracksContainer.appendChild(track.element);
+}
+
+document.getElementById('playAll').onclick = () => {
+ const now = audioContext.currentTime;
+ const startTime = now + 0.1;
+ tracks.forEach(track => track.play(startTime));
+};
+
+document.getElementById('stopAll').onclick = () => {
+ tracks.forEach(track => track.stop());
+};
+})();
+</script>
+</body>
+</html>
